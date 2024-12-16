@@ -23,6 +23,10 @@ def lambda_handler(event, context):
     # parent_message_id = incoming_session_attributes.get('messageId')
     # print(conversation_id)
     ##----------------------------------------------------------------------------------------
+    incoming_session_attributes = event.get('sessionState', {}).get('sessionAttributes', {})
+     # Will not be present for the first interaction
+    conversation_id = incoming_session_attributes.get('conversationId')
+    
     set_langchain_api_key()
     token_client = TVMClient(
         issuer=os.environ["TVM_ISSUER_URL"],
@@ -42,43 +46,42 @@ def lambda_handler(event, context):
         region_name=os.environ['AWS_REGION'],  # specify your region
         streaming=False,
         client=q_client,
-        application_id=os.environ['Q_APPLICATION_ID']
+        application_id=os.environ['Q_APPLICATION_ID'],
+        conversation_id=conversation_id
     )
 
-
-    session_id = event['sessionId']
-    history = DynamoDBChatMessageHistory(
-        table_name=os.environ["CONVERSATION_TABLE_NAME"],
-        session_id=session_id,
-    )
+    ## We do not require chat history as that is retained by Q and is referenced using the conversationId passed on via Lex
+    # session_id = event['sessionId']
+    # history = DynamoDBChatMessageHistory(
+    #     table_name=os.environ["CONVERSATION_TABLE_NAME"],
+    #     session_id=session_id,
+    # )
     user_message = event["inputTranscript"]
     qa_system_prompt = """Answer using the context below. Keep to 3 sentences max. Say "I don't know" if unsure."""
-    contextualize_q_system_prompt = """Given a chat history and the latest user question \
-    which might reference context in the chat history, formulate a standalone question \
-    which can be understood without the chat history. Do NOT answer the question, \
-    just reformulate it if needed and otherwise return it as is."""
-    contextualize_q_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", contextualize_q_system_prompt),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("human", "{question}"),
-        ]
-    )
-    contextualize_q_chain = contextualize_q_prompt | llm | StrOutputParser()
+    # contextualize_q_system_prompt = """Given a chat history and the latest user question \
+    # which might reference context in the chat history, formulate a standalone question \
+    # which can be understood without the chat history. Do NOT answer the question, \
+    # just reformulate it if needed and otherwise return it as is."""
+    # contextualize_q_prompt = ChatPromptTemplate.from_messages(
+    #     [
+    #         ("system", contextualize_q_system_prompt),
+    #         MessagesPlaceholder(variable_name="chat_history"),
+    #         ("human", "{question}"),
+    #     ]
+    # )
+    # contextualize_q_chain = contextualize_q_prompt | llm | StrOutputParser()
     qa_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", qa_system_prompt),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("human", "{question}"),
+            ("human", "{question}")
         ]
     )
 
-
-    def contextualized_question(input: dict):
-        if input.get("chat_history"):
-            return contextualize_q_chain
-        else:
-            return input["question"]
+    # def contextualized_question(input: dict):
+    #     if input.get("chat_history"):
+    #         return contextualize_q_chain
+    #     else:
+    #         return input["question"]
 
 
     rag_chain = (
@@ -87,7 +90,7 @@ def lambda_handler(event, context):
         | llm
     )
     #This is the string representing the AI generated answer the LLM returns
-    response = rag_chain.invoke({"question": user_message, "chat_history": history.messages})
+    response = rag_chain.invoke({"question": user_message})
 
     #This is a dictionary representing the entire return object from the AmazonQ ChatSync API
     #This dictionary contains the LLM response above unders the "systemMessage" property.
@@ -95,8 +98,8 @@ def lambda_handler(event, context):
     response_dictionary = llm.get_last_response()
 
     # # Add user message and AI message
-    history.add_user_message(user_message)
-    history.add_ai_message(response)
+    # history.add_user_message(user_message)
+    # history.add_ai_message(response)
    
     session_attributes = event["sessionState"].get("sessionAttributes", {})
     session_attributes["conversationId"] = response_dictionary["conversationId"]  # Replace with actual value
